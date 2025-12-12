@@ -1,0 +1,38 @@
+#version: "3.8"
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: mosquitto
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    ports:
+      - "1883:1883"
+      - "9001:9001" # optional websocket if enabled
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: mqtt-backend
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+
+  simulator:
+    build:
+      context: ./simulator
+    container_name: mqtt-simulator
+    env_file:
+      - ./.env
+      - ./simulator/.env
+    depends_on:
+      - mosquitto
+      - backend
+    restart: unless-stopped
+
