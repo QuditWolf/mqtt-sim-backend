@@ -24,8 +24,8 @@ From repository root:
 docker compose up --build
 
 to test that the process is working:
-```bash
 python test.py
+```
 
 # MQTT Device Simulator + FastAPI Backend (Dockerized)
 
