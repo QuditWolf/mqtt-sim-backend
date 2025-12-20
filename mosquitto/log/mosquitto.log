@@ -1,0 +1,16 @@
+1766246919: mosquitto version 2.0.22 starting
+1766246919: Config loaded from /mosquitto/config/mosquitto.conf.
+1766246919: Opening ipv4 listen socket on port 1883.
+1766246919: Opening ipv6 listen socket on port 1883.
+1766246919: mosquitto version 2.0.22 running
+1766246943: mosquitto version 2.0.22 terminating
+1766246943: Saving in-memory database to /mosquitto/data//mosquitto.db.
+1766246944: mosquitto version 2.0.22 starting
+1766246944: Config loaded from /mosquitto/config/mosquitto.conf.
+1766246944: Opening ipv4 listen socket on port 1883.
+1766246944: Opening ipv6 listen socket on port 1883.
+1766246944: mosquitto version 2.0.22 running
+1766246949: New connection from 172.19.0.5:39891 on port 1883.
+1766246949: New client connected from 172.19.0.5:39891 as sim-3117 (p2, c1, k60).
+1766246950: New connection from 172.19.0.4:53761 on port 1883.
+1766246950: New client connected from 172.19.0.4:53761 as auto-E7D15AB3-DFC1-5EBA-8A6F-C950166CCF76 (p2, c1, k60).
