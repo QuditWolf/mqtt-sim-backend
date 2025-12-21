@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Query, Depends, WebSocket, WebSocketDisconnect
@@ -280,15 +281,7 @@ async def websocket_endpoint(websocket: WebSocket, device_id: Optional[str] = No
     WebSocket endpoint for real-time sensor updates.
     
     Connect to receive all updates: ws://host/api/ws/live
-    Connect to receive updates for a specific device: ws://host/api/ws/live?device_id=DEV001
-    
-    Messages from server:
-    {
-        "type": "sensor_update",
-        "device_id": "DEV001",
-        "sensor_type": "H2",
-        "data": {...}
-    }
+    Connect for specific device: ws://host/api/ws/live?device_id=DEV001
     
     Messages from client:
     {"action": "subscribe", "device_id": "DEV001"}
@@ -298,23 +291,24 @@ async def websocket_endpoint(websocket: WebSocket, device_id: Optional[str] = No
     
     try:
         while True:
-            # Listen for client messages (subscribe/unsubscribe commands)
             try:
                 data = await websocket.receive_json()
                 action = data.get("action")
                 target_device = data.get("device_id")
                 
                 if action == "subscribe" and target_device:
-                    await manager.subscribe_to_device(websocket, target_device)
+                    manager.subscribe_to_device(websocket, target_device)
                     await websocket.send_json({"type": "subscribed", "device_id": target_device})
                     
                 elif action == "unsubscribe" and target_device:
-                    await manager.unsubscribe_from_device(websocket, target_device)
+                    manager.unsubscribe_from_device(websocket, target_device)
                     await websocket.send_json({"type": "unsubscribed", "device_id": target_device})
                     
             except Exception:
-                # Keep connection alive even if message parsing fails
-                pass
+                await asyncio.sleep(0.1)
                 
     except WebSocketDisconnect:
-        await manager.disconnect(websocket)
+        manager.disconnect(websocket)
+    except Exception:
+        manager.disconnect(websocket)
+

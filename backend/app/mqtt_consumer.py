@@ -3,7 +3,6 @@ import os
 import logging
 from datetime import datetime
 import aiomqtt
-from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .database import get_db_context
@@ -19,24 +18,21 @@ MQTT_TOPIC = os.getenv("MQTT_TOPIC", "devices/telemetry")
 
 def parse_sensor_message(payload: str) -> dict:
     """
-    Parse new sensor message format:
+    Parse sensor message format:
     *,<status>,<device_id>,<imei>,<sensor_type>,<sensor_data>,<alarm_low>,<alarm_high>,
     <fault_status>,<temp>,<humidity>,<power_type>,<battery>,<rssi>,<time>,<date>
     """
     parts = [p.strip() for p in payload.split(",")]
     
-    # Ensure we have at least 16 fields
     while len(parts) < 16:
         parts.append("")
     
-    # Parse power type
     power_type_str = parts[11].upper() if parts[11] else "BATTERY"
     power_type = PowerType.DIRECT if power_type_str == "DIRECT" else PowerType.BATTERY
     
-    # Parse date and time to datetime
     try:
-        time_str = parts[14]  # HH:MM:SS
-        date_str = parts[15]  # DD/MM/YY
+        time_str = parts[14]
+        date_str = parts[15]
         if time_str and date_str:
             dt = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%y %H:%M:%S")
         else:
@@ -160,34 +156,27 @@ async def process_sensor_data(data: dict):
 
 async def start_mqtt_loop(loop):
     """Main MQTT consumer loop - subscribes to broker and processes messages."""
-    LOG.info("Starting MQTT consumer using aiomqtt: %s:%s topic=%s",
-             MQTT_HOST, MQTT_PORT, MQTT_TOPIC)
+    LOG.info("Starting MQTT consumer: %s:%s topic=%s", MQTT_HOST, MQTT_PORT, MQTT_TOPIC)
 
     while True:
         try:
             async with aiomqtt.Client(MQTT_HOST, port=MQTT_PORT) as client:
                 LOG.info("Connected to MQTT broker")
-
-                messages = client.messages
                 await client.subscribe(MQTT_TOPIC)
 
-                async for message in messages:
+                async for message in client.messages:
                     try:
                         payload = message.payload.decode()
-                        LOG.debug(f"Received: {payload}")
-                        
                         data = parse_sensor_message(payload)
                         
-                        # Validate essential fields
                         if not data["device_id"] or not data["sensor_type"]:
-                            LOG.warning("Missing device_id or sensor_type, skipping")
                             continue
                         
                         await process_sensor_data(data)
                         
                     except Exception as e:
-                        LOG.exception("Parsing or DB error: %s", e)
+                        LOG.exception("Error processing message: %s", e)
 
         except Exception as e:
-            LOG.error("MQTT error: %s — reconnecting in 5 seconds", e)
+            LOG.error("MQTT connection error: %s — reconnecting in 5s", e)
             await asyncio.sleep(5)
