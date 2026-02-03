@@ -1,5 +1,25 @@
 #version: "3.8"
 services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: pelectro-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pelectro
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Mosquitto MQTT Broker
   mosquitto:
     image: eclipse-mosquitto:2.0
     container_name: mosquitto
@@ -9,9 +29,10 @@ services:
       - ./mosquitto/log:/mosquitto/log
     ports:
       - "1883:1883"
-      - "9001:9001" # optional websocket if enabled
+      - "9001:9001" # WebSocket port
     restart: unless-stopped
 
+  # FastAPI Backend
   backend:
     build:
       context: ./backend
@@ -21,18 +42,23 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - mosquitto
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
     restart: unless-stopped
 
+  # Device Simulator
   simulator:
     build:
       context: ./simulator
     container_name: mqtt-simulator
     env_file:
-      - ./.env
       - ./simulator/.env
     depends_on:
       - mosquitto
       - backend
     restart: unless-stopped
 
+volumes:
+  postgres_data:

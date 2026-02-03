@@ -1,163 +1,108 @@
-# MQTT Device Simulator + FastAPI Backend (Docker)
+# MQTT Sensor Telemetry Backend
 
-This repository runs a simple local environment with:
-
-- **Mosquitto** MQTT broker
-- **Simulator** that publishes CSV telemetry for multiple devices every second
-- **FastAPI backend** that subscribes to MQTT, stores telemetry in SQLite, and exposes HTTP APIs
+Backend for real-time sensor data with MQTT, PostgreSQL, and WebSocket support.
 
 ## Features
 
-- Messages follow CSV format: `q0,q1,q2,q3,...,q20` (21 fields)
-- `q3` is treated as `imei` — used as device identifier
-- `q8` sensor field kept as `"0.00"` to avoid server-side recompute (per requirement)
-- Backend runs an MQTT subscriber in a background task and writes to SQLite
-- HTTP API to list devices, get latest device telemetry, and fetch historical entries and searches by project/site/device
+- **Device & Sensor Hierarchy**: Devices contain multiple sensors (up to 16 types)
+- **Real-time Updates**: WebSocket endpoint for live sensor data streaming
+- **Historical Data**: REST APIs with date filtering and pagination
+- **PostgreSQL**: Scalable time-series storage with connection pooling
 
-## Quick start (Docker Compose)
-
-Requirements: Docker and Docker Compose.
-
-From repository root:
-
-```bash
-docker compose up --build
-
-to test that the process is working:
-```bash
-python test.py
-
-# MQTT Device Simulator + FastAPI Backend (Dockerized)
-
-This repository provides a full local simulation stack consisting of:
-
-* **MQTT Simulator** generating telemetry for multiple devices
-* **Mosquitto MQTT Broker**
-* **FastAPI Backend** subscribing to the MQTT topic, parsing messages, storing them in **SQLite**, and exposing APIs
-
-All services run together via **Docker Compose**.
-
----
-
-## Features
-
-### Simulator
-
-* Simulates any number of devices (`DEVICE_COUNT`)
-* Sends CSV telemetry every 1 second (`PUBLISH_INTERVAL`)
-* Auto-randomized device values
-* Publishes to MQTT broker on topic: `devices/telemetry`
-
-### Backend
-
-* Subscribes to MQTT using asyncio
-* Parses and stores CSV fields (q0–q20) in SQLite
-* Provides HTTP API endpoints:
-
-| Endpoint                          | Description                     |
-| --------------------------------- | ------------------------------- |
-| `GET /api/devices`                | List all devices seen so far    |
-| `GET /api/devices/{imei}/latest`  | Latest telemetry for device     |
-| `GET /api/devices/{imei}/history` | Historical records              |
-| `GET /api/search`                 | Filter by project, site, device |
-
----
-
-## Architecture Overview
+## Architecture
 
 ```
-+-------------+       MQTT        +-------------+        SQLite        +-----------+
-| Simulator   |  ---> 1883 ---->  |  Mosquitto  |  ---> backend ---->  |  DB File  |
-| (multiple)  |                   |   Broker    |                     | devices.db|
-+-------------+                   +-------------+                     +-----------+
-                                          |
-                                          v
-                                    FastAPI API
-                                      localhost:8000
++-------------+       MQTT        +-------------+        PostgreSQL       
+| Simulator   |  ---> 1883 --->   |  Mosquitto  |  ---> backend --->  [DB]
++-------------+                   +-------------+                     
+                                        |
+                                        v
+                                  FastAPI API
+                                  localhost:8000
+                                        |
+                                        v
+                                   WebSocket
+                                   /ws/live
 ```
-
----
 
 ## Quick Start
 
-### 1. Clone the repo
-
 ```bash
-git clone https://github.com/<your-username>/mqtt-sim-backend.git
-cd mqtt-sim-backend
-```
-
-### 2. Start the stack
-
-```bash
+# Start all services
 docker compose up --build
+
+# Access API docs
+open http://localhost:8000/docs
 ```
 
-### 3. Access the API
+## MQTT Payload Format
 
-Open:
-
+Each sensor sends a CSV message:
 ```
-http://localhost:8000/docs
+*,<status>,<device_id>,<imei>,<sensor_type>,<sensor_data>,<alarm_low>,<alarm_high>,<fault_status>,<temp>,<humidity>,<power_type>,<battery>,<rssi>,<time>,<date>
 ```
 
----
+Example:
+```
+*,11,DEV001,867950076170867,H2,25.5,10.0,50.0,0,28.5,65.2,BATTERY,85,28,14:30:00,20/12/24
+```
+
+## API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/devices` | List all devices |
+| `GET /api/devices/{device_id}` | Device details + sensors |
+| `GET /api/devices/{device_id}/sensors` | List sensors |
+| `GET /api/devices/{device_id}/history` | Device historical data |
+| `GET /api/sensors/{sensor_id}/history` | Sensor historical data |
+| `WS /api/ws/live` | Real-time WebSocket |
+
+## WebSocket Usage
+
+Connect to `ws://host:8000/api/ws/live` to receive real-time updates.
+
+**Subscribe to specific device:**
+```json
+{"action": "subscribe", "device_id": "DEV001"}
+```
+
+**Receive sensor updates:**
+```json
+{
+  "type": "sensor_update",
+  "device_id": "DEV001",
+  "sensor_type": "H2",
+  "data": {...}
+}
+```
+
+## Sensor Types
+
+H2, O2, CO, CH4, NH3, CL2, SO2, NO2, LEL, VOC, CO2, H2S, O3, PH3, HCN, HCL
 
 ## Environment Variables
 
-Copy `.env.example` → `.env` in both `backend/` and `simulator/`.
+### Backend (.env)
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `MQTT_HOST` | MQTT broker hostname |
+| `MQTT_PORT` | MQTT broker port |
+| `MQTT_TOPIC` | Topic to subscribe to |
 
-### Simulator
-
-| Variable           | Description              |
-| ------------------ | ------------------------ |
-| `MQTT_HOST`        | Broker hostname          |
-| `MQTT_PORT`        | MQTT port                |
-| `MQTT_TOPIC`       | Publish topic            |
-| `DEVICE_COUNT`     | How many virtual devices |
+### Simulator (.env)
+| Variable | Description |
+|----------|-------------|
+| `DEVICE_COUNT` | Number of virtual devices |
+| `SENSORS_PER_DEVICE` | Sensors per device (max 16) |
 | `PUBLISH_INTERVAL` | Seconds between messages |
-
-### Backend
-
-| Variable      | Description         |
-| ------------- | ------------------- |
-| `SQLITE_PATH` | SQLite DB file path |
-| `MQTT_HOST`   | Broker host         |
-| `MQTT_TOPIC`  | Subscribe topic     |
-
----
-
-## Example Telemetry Message
-
-```
-*,11,1001,867950076170867,123456,AGRAI00,100,2001,0.00,21.0,40.0,6.22,12:00:00,01/01/25,31,1,133,14,100,0,0
-```
-
-Field 3 (`q3`) is used as `imei`.
-
----
 
 ## Stopping Services
 
 ```bash
 docker compose down
+
+# Clear data
+docker compose down -v
 ```
-
-To clear database and Mosquitto persistence:
-
-```bash
-rm -rf mosquitto/data/*
-rm -rf backend/app/data/*
-```
-
----
-
-## Roadmap (optional improvements)
-
-* Switch from SQLite → PostgreSQL
-* Add authentication on FastAPI routes
-* Wrap MQTT consumer in supervisor for auto-restart
-* Add Grafana dashboard integration
-
----
-

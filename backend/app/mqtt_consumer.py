@@ -3,8 +3,11 @@ import os
 import logging
 from datetime import datetime
 import aiomqtt
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from .db import insert_record
+from .database import get_db_context
+from .models import Device, Sensor, SensorReading, PowerType
+from .websocket import manager
 
 LOG = logging.getLogger("mqtt_consumer")
 
@@ -13,57 +16,167 @@ MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 MQTT_TOPIC = os.getenv("MQTT_TOPIC", "devices/telemetry")
 
 
-def parse_csv_message(payload: str) -> dict:
+def parse_sensor_message(payload: str) -> dict:
+    """
+    Parse sensor message format:
+    *,<status>,<device_id>,<imei>,<sensor_type>,<sensor_data>,<alarm_low>,<alarm_high>,
+    <fault_status>,<temp>,<humidity>,<power_type>,<battery>,<rssi>,<time>,<date>
+    """
     parts = [p.strip() for p in payload.split(",")]
-    while len(parts) < 21:
+    
+    while len(parts) < 16:
         parts.append("")
-
+    
+    power_type_str = parts[11].upper() if parts[11] else "BATTERY"
+    power_type = PowerType.DIRECT if power_type_str == "DIRECT" else PowerType.BATTERY
+    
+    try:
+        time_str = parts[14]
+        date_str = parts[15]
+        if time_str and date_str:
+            dt = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%y %H:%M:%S")
+        else:
+            dt = datetime.utcnow()
+    except ValueError:
+        dt = datetime.utcnow()
+    
     return {
-        "q0": parts[0],
-        "q1": parts[1],
-        "q2": parts[2],
-        "q3": parts[3],
-        "q4": parts[4],
-        "q5": parts[5],
-        "q6": parts[6],
-        "q7": parts[7],
-        "q8": parts[8],
-        "q9": parts[9],
-        "q10": parts[10],
-        "q11": parts[11],
-        "time": parts[12],
-        "date": parts[13],
-        "q14": parts[14],
-        "q15": parts[15],
-        "q16": parts[16],
-        "battery": parts[17],
-        "q18": parts[18],
-        "q19": parts[19],
-        "q20": parts[20],
+        "start_marker": parts[0],
+        "status": int(parts[1]) if parts[1].isdigit() else 0,
+        "device_id": parts[2],
+        "imei": parts[3],
+        "sensor_type": parts[4],
+        "sensor_data": float(parts[5]) if parts[5] else 0.0,
+        "alarm_low": float(parts[6]) if parts[6] else 0.0,
+        "alarm_high": float(parts[7]) if parts[7] else 0.0,
+        "fault_status": int(parts[8]) if parts[8].isdigit() else 0,
+        "temperature": float(parts[9]) if parts[9] else None,
+        "humidity": float(parts[10]) if parts[10] else None,
+        "power_type": power_type,
+        "battery_status": int(parts[12]) if parts[12].isdigit() else None,
+        "rssi": int(parts[13]) if parts[13].isdigit() else None,
+        "recorded_at": dt,
     }
 
 
+async def process_sensor_data(data: dict):
+    """Process parsed sensor data: upsert device, upsert sensor, insert reading."""
+    async with get_db_context() as session:
+        now = datetime.utcnow()
+        
+        # 1. Upsert Device
+        device_stmt = pg_insert(Device).values(
+            device_id=data["device_id"],
+            imei=data["imei"],
+            temperature=data["temperature"],
+            humidity=data["humidity"],
+            power_type=data["power_type"],
+            battery_status=data["battery_status"],
+            rssi=data["rssi"],
+            last_seen=now,
+            created_at=now,
+        ).on_conflict_do_update(
+            index_elements=["device_id"],
+            set_={
+                "temperature": data["temperature"],
+                "humidity": data["humidity"],
+                "power_type": data["power_type"],
+                "battery_status": data["battery_status"],
+                "rssi": data["rssi"],
+                "last_seen": now,
+            }
+        )
+        await session.execute(device_stmt)
+        
+        # 2. Upsert Sensor
+        sensor_stmt = pg_insert(Sensor).values(
+            device_id=data["device_id"],
+            sensor_type=data["sensor_type"],
+            sensor_data=data["sensor_data"],
+            alarm_low=data["alarm_low"],
+            alarm_high=data["alarm_high"],
+            fault_status=data["fault_status"],
+            last_updated=now,
+            created_at=now,
+        ).on_conflict_do_update(
+            index_elements=["device_id", "sensor_type"],
+            set_={
+                "sensor_data": data["sensor_data"],
+                "alarm_low": data["alarm_low"],
+                "alarm_high": data["alarm_high"],
+                "fault_status": data["fault_status"],
+                "last_updated": now,
+            }
+        ).returning(Sensor.id)
+        
+        result = await session.execute(sensor_stmt)
+        sensor_id = result.scalar_one()
+        
+        # 3. Insert Sensor Reading (time-series)
+        reading = SensorReading(
+            sensor_id=sensor_id,
+            device_id=data["device_id"],
+            sensor_type=data["sensor_type"],
+            value=data["sensor_data"],
+            alarm_low=data["alarm_low"],
+            alarm_high=data["alarm_high"],
+            fault_status=data["fault_status"],
+            temperature=data["temperature"],
+            humidity=data["humidity"],
+            battery_status=data["battery_status"],
+            rssi=data["rssi"],
+            recorded_at=data["recorded_at"],
+        )
+        session.add(reading)
+        
+        await session.commit()
+        
+        # 4. Broadcast to WebSocket clients
+        ws_data = {
+            "device_id": data["device_id"],
+            "imei": data["imei"],
+            "sensor_type": data["sensor_type"],
+            "sensor_data": data["sensor_data"],
+            "alarm_low": data["alarm_low"],
+            "alarm_high": data["alarm_high"],
+            "fault_status": data["fault_status"],
+            "temperature": data["temperature"],
+            "humidity": data["humidity"],
+            "power_type": data["power_type"].value,
+            "battery_status": data["battery_status"],
+            "rssi": data["rssi"],
+            "recorded_at": data["recorded_at"].isoformat(),
+        }
+        await manager.broadcast_sensor_update(
+            data["device_id"],
+            data["sensor_type"],
+            ws_data
+        )
+
+
 async def start_mqtt_loop(loop):
-    LOG.info("Starting MQTT consumer using aiomqtt: %s:%s topic=%s",
-             MQTT_HOST, MQTT_PORT, MQTT_TOPIC)
+    """Main MQTT consumer loop - subscribes to broker and processes messages."""
+    LOG.info("Starting MQTT consumer: %s:%s topic=%s", MQTT_HOST, MQTT_PORT, MQTT_TOPIC)
 
     while True:
         try:
             async with aiomqtt.Client(MQTT_HOST, port=MQTT_PORT) as client:
                 LOG.info("Connected to MQTT broker")
-
-                messages = client.messages        # <-- no async with
                 await client.subscribe(MQTT_TOPIC)
 
-                async for message in messages:
+                async for message in client.messages:
                     try:
                         payload = message.payload.decode()
-                        rec = parse_csv_message(payload)
-                        await asyncio.to_thread(insert_record, rec)
+                        data = parse_sensor_message(payload)
+                        
+                        if not data["device_id"] or not data["sensor_type"]:
+                            continue
+                        
+                        await process_sensor_data(data)
+                        
                     except Exception as e:
-                        LOG.exception("Parsing or DB error: %s", e)
+                        LOG.exception("Error processing message: %s", e)
 
         except Exception as e:
-            LOG.error("MQTT error: %s — reconnecting in 5 seconds", e)
+            LOG.error("MQTT connection error: %s — reconnecting in 5s", e)
             await asyncio.sleep(5)
-
