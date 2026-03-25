@@ -1,3 +1,13 @@
+"""
+FastAPI application entry point for the MQTT sensor telemetry backend.
+
+On startup, initialises the PostgreSQL schema and launches the async MQTT
+consumer loop. The consumer subscribes to the configured broker topic,
+parses incoming CSV payloads from field devices, upserts device/sensor
+state, appends time-series readings to PostgreSQL, and broadcasts each
+reading to connected WebSocket clients via the shared ConnectionManager.
+"""
+
 import asyncio
 import logging
 import os
